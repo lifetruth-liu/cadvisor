@@ -16,6 +16,7 @@ package http
 
 import (
 	"fmt"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"net/http"
 
 	"github.com/google/cadvisor/cmd/internal/api"
@@ -30,8 +31,6 @@ import (
 
 	auth "github.com/abbot/go-http-auth"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/collectors"
-
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/clock"
@@ -96,8 +95,11 @@ func RegisterHandlers(mux httpmux.Mux, containerManager manager.Manager, httpAut
 
 // RegisterPrometheusHandler creates a new PrometheusCollector and configures
 // the provided HTTP mux to handle the given Prometheus endpoint.
-func RegisterPrometheusHandler(mux httpmux.Mux, resourceManager manager.Manager, prometheusEndpoint string,
-	f metrics.ContainerLabelsFunc, includedMetrics container.MetricSet) {
+func RegisterPrometheusHandler(mux httpmux.Mux, resourceManager manager.Manager,
+	prometheusEndpoint string,
+	onlyContainer bool,
+	f metrics.ContainerLabelsFunc, includedMetrics container.MetricSet,
+	labelFilters []metrics.DockerFilter) {
 	goCollector := collectors.NewGoCollector()
 	processCollector := collectors.NewProcessCollector(collectors.ProcessCollectorOpts{})
 	machineCollector := metrics.NewPrometheusMachineCollector(resourceManager, includedMetrics)
@@ -112,12 +114,18 @@ func RegisterPrometheusHandler(mux httpmux.Mux, resourceManager manager.Manager,
 		opts.Recursive = true // get all child containers
 
 		r := prometheus.NewRegistry()
-		r.MustRegister(
-			metrics.NewPrometheusCollector(resourceManager, f, includedMetrics, clock.RealClock{}, opts),
-			machineCollector,
-			goCollector,
-			processCollector,
-		)
+		if onlyContainer {
+			r.MustRegister(
+				metrics.NewPrometheusCollector(resourceManager, f, includedMetrics, clock.RealClock{}, opts, labelFilters),
+			)
+		} else {
+			r.MustRegister(
+				metrics.NewPrometheusCollector(resourceManager, f, includedMetrics, clock.RealClock{}, opts, labelFilters),
+				machineCollector,
+				goCollector,
+				processCollector,
+			)
+		}
 		promhttp.HandlerFor(r, promhttp.HandlerOpts{ErrorHandling: promhttp.ContinueOnError}).ServeHTTP(w, req)
 	}))
 }

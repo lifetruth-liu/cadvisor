@@ -50,6 +50,8 @@ var maxProcs = flag.Int("max_procs", 0, "max number of CPUs that can be used sim
 
 var versionFlag = flag.Bool("version", false, "print cAdvisor version and exit")
 
+var onlyContainer = flag.Bool("only_container", false, "only print container metrics")
+
 var httpAuthFile = flag.String("http_auth_file", "", "HTTP auth file for the web UI")
 var httpAuthRealm = flag.String("http_auth_realm", "localhost", "HTTP auth realm for the web UI")
 var httpDigestFile = flag.String("http_digest_file", "", "HTTP digest file for the web UI")
@@ -64,6 +66,7 @@ var collectorKey = flag.String("collector_key", "", "Key for the collector's cer
 
 var storeContainerLabels = flag.Bool("store_container_labels", true, "convert container labels and environment variables into labels on prometheus metrics for each container. If flag set to false, then only metrics exported are container name, first alias, and image name")
 var whitelistedContainerLabels = flag.String("whitelisted_container_labels", "", "comma separated list of container labels to be converted to labels on prometheus metrics for each container. store_container_labels must be set to false for this to take effect.")
+var whitelistedContainerLabelFilters = flag.String("whitelisted_container_label_filters", "", "demo: io.kubernetes.pod.namespace::kube-system,default$")
 
 var envMetadataWhiteList = flag.String("env_metadata_whitelist", "", "a comma-separated list of environment variable keys matched with specified prefix that needs to be collected for containers, only support containerd and docker runtime for now.")
 
@@ -159,8 +162,13 @@ func main() {
 		containerLabelFunc = metrics.BaseContainerLabels(whitelistedLabels)
 	}
 
+	var labelFilters []metrics.DockerFilter
+	if *storeContainerLabels || *whitelistedContainerLabels != "" {
+		labelFilters = metrics.BaseFilters(*whitelistedContainerLabelFilters)
+	}
+
 	// Register Prometheus collector to gather information about containers, Go runtime, processes, and machine
-	cadvisorhttp.RegisterPrometheusHandler(mux, resourceManager, *prometheusEndpoint, containerLabelFunc, includedMetrics)
+	cadvisorhttp.RegisterPrometheusHandler(mux, resourceManager, *prometheusEndpoint, *onlyContainer, containerLabelFunc, includedMetrics, labelFilters)
 
 	// Start the manager.
 	if err := resourceManager.Start(); err != nil {

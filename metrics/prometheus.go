@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/cadvisor/container"
@@ -99,14 +100,49 @@ type PrometheusCollector struct {
 	containerMetrics    []containerMetric
 	containerLabelsFunc ContainerLabelsFunc
 	includedMetrics     container.MetricSet
+	labelFilters        []DockerFilter
 	opts                v2.RequestOptions
+}
+
+type DockerFilter interface {
+	Filter(map[string]string) bool
+}
+
+type dockerFilter struct {
+	key    string
+	values map[string]struct{}
+}
+
+func NewDockerFilter(key, values string) DockerFilter {
+	lf := &dockerFilter{
+		key:    key,
+		values: map[string]struct{}{},
+	}
+	for _, n := range strings.Split(values, ",") {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		lf.values[n] = struct{}{}
+	}
+	return lf
+}
+
+func (d *dockerFilter) Filter(kv map[string]string) bool {
+	if len(d.values) == 0 {
+		return false
+	}
+	if _, isOk := d.values[kv[ContainerLabelPrefix+d.key]]; !isOk {
+		return true
+	}
+	return false
 }
 
 // NewPrometheusCollector returns a new PrometheusCollector. The passed
 // ContainerLabelsFunc specifies which base labels will be attached to all
 // exported metrics. If left to nil, the DefaultContainerLabels function
 // will be used instead.
-func NewPrometheusCollector(i infoProvider, f ContainerLabelsFunc, includedMetrics container.MetricSet, now clock.Clock, opts v2.RequestOptions) *PrometheusCollector {
+func NewPrometheusCollector(i infoProvider, f ContainerLabelsFunc, includedMetrics container.MetricSet, now clock.Clock, opts v2.RequestOptions, labelFilters []DockerFilter) *PrometheusCollector {
 	if f == nil {
 		f = DefaultContainerLabels
 	}
@@ -133,6 +169,7 @@ func NewPrometheusCollector(i infoProvider, f ContainerLabelsFunc, includedMetri
 		},
 		includedMetrics: includedMetrics,
 		opts:            opts,
+		labelFilters:    labelFilters,
 	}
 	if includedMetrics.Has(container.CpuUsageMetrics) {
 		c.containerMetrics = append(c.containerMetrics, []containerMetric{
@@ -1811,6 +1848,30 @@ func BaseContainerLabels(whiteList []string) func(container *info.ContainerInfo)
 	}
 }
 
+func BaseFilters(str string) []DockerFilter {
+	var filters []DockerFilter
+	for _, kv := range strings.Split(str, "$$") {
+		if strings.TrimSpace(kv) == "" {
+			continue
+		}
+		kvList := strings.Split(kv, "::")
+		if len(kvList) != 2 {
+			panic("err filter: " + str)
+		}
+		filters = append(filters, NewDockerFilter(strings.TrimSpace(kvList[0]), strings.TrimSpace(kvList[1])))
+	}
+	return filters
+}
+
+func (c *PrometheusCollector) isSkip(containerLabels map[string]string) bool {
+	for _, filter := range c.labelFilters {
+		if filter.Filter(containerLabels) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *PrometheusCollector) collectContainersInfo(ch chan<- prometheus.Metric) {
 	containers, err := c.infoProvider.GetRequestedContainersInfo("/", c.opts)
 	if err != nil {
@@ -1829,6 +1890,11 @@ func (c *PrometheusCollector) collectContainersInfo(ch chan<- prometheus.Metric)
 		values := make([]string, 0, len(rawLabels))
 		labels := make([]string, 0, len(rawLabels))
 		containerLabels := c.containerLabelsFunc(cont)
+
+		if c.isSkip(containerLabels) {
+			continue
+		}
+
 		for l := range rawLabels {
 			duplicate := false
 			sl := sanitizeLabelName(l)
